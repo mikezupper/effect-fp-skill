@@ -81,6 +81,25 @@ const describe = OrderState.$match({
 
 For unions that cross a boundary (persistence, API), use `Schema.TaggedStruct` + `Schema.Union` instead so the union is also serializable.
 
+## Recursive schemas
+
+Recursion needs `Schema.suspend` plus an explicit type annotation, and — learned the hard way — an **`identifier` annotation, or OpenAPI/JSON-Schema generation dies at runtime** (`Missing annotation ... requires an "identifier"`):
+
+```ts
+export interface CategoryTree {
+  readonly id: string
+  readonly name: string
+  readonly children: ReadonlyArray<CategoryTree>
+}
+export const CategoryTree: Schema.Schema<CategoryTree> = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  children: Schema.Array(Schema.suspend(() => CategoryTree)),
+}).annotations({ identifier: "CategoryTree" }) // REQUIRED for HttpApiSwagger/OpenApi
+```
+
+Tip: keep recursive *response* shapes as plain encoded types (`Type = Encoded`, no brands) — the recursive annotation then needs only one type parameter. Pure functions that traverse recursive structures must be **total**: handle self-reference and cycles (a `visited` set) rather than assuming well-formed input — and property-test that every input node appears in the output exactly once.
+
 ## State transitions as functions
 
 Transitions are total functions between state types; invalid transitions are unrepresentable or return errors — never runtime surprises:
