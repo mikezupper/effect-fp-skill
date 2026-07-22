@@ -16,6 +16,8 @@
 
 A [Claude Code skill](https://code.claude.com/docs/en/skills) that makes an AI coding agent build **every** TypeScript application — backend services, CLIs, full-stack apps, libraries — on top of [Effect](https://effect.website), applying functional programming end-to-end: railway-oriented error handling, domain modeling with types, capability-based dependency injection, property-based testing, and a production-hardening checklist that is treated as the definition of done.
 
+> **Proof repo:** [effect-fp-skill-examples](https://github.com/mikezupper/effect-fp-skill-examples) — three working apps built strictly with this skill (a URL shortener, a full commerce API with atomic checkout, and a Lit SSR storefront), with CI-verified test suites. Bugs found building them were fed back into these references.
+
 The design philosophy is Scott Wlaschin's ([F# for Fun and Profit](https://fsharpforfunandprofit.com)) — this skill is the opinionated mapping of that body of work onto its TypeScript-native realization, Effect.
 
 ---
