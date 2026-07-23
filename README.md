@@ -12,7 +12,7 @@
 [![null](https://img.shields.io/badge/null-Option%3CA%3E-yellow)](#hard-rules)
 [![References](https://img.shields.io/badge/references-12_files-informational)](#whats-inside)
 [![Inspired by](https://img.shields.io/badge/inspired_by-F%23_for_Fun_and_Profit-306998)](https://fsharpforfunandprofit.com)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-CC_BY_4.0-lightgrey)](LICENSE)
 
 A [Claude Code skill](https://code.claude.com/docs/en/skills) that makes an AI coding agent build **every** TypeScript application — backend services, CLIs, full-stack apps, libraries — on top of [Effect](https://effect.website), applying functional programming end-to-end: railway-oriented error handling, domain modeling with types, capability-based dependency injection, property-based testing, and a production-hardening checklist that is treated as the definition of done.
 
@@ -192,3 +192,7 @@ The skill uses **progressive disclosure**, which is why it's a folder rather tha
 - **[Claude Code skills](https://code.claude.com/docs/en/skills)** — the skill format and progressive-disclosure model
 
 *This skill encodes one team's opinionated synthesis; neither Scott Wlaschin nor the Effect team endorses it.*
+
+## License
+
+Text and markup licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) © 2026 Mike Zupper.
