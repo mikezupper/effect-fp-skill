@@ -7,8 +7,8 @@ The "Recipe for a Functional App" realized: an onion. Pure domain at the center,
 ```
 src/
   domain/          # pure: schemas, branded types, unions, errors, pure functions
-  workflows/       # Effect pipelines: use-cases composed from domain + service interfaces
-  services/        # Context.Tag / Effect.Service definitions + live/test Layer implementations
+  workflows/       # Effect.fn pipelines: use-cases composed from domain + service interfaces
+  services/        # Context.Service definitions + live/test Layer implementations
   http/ | cli/     # thin adapters: decode request → run workflow → encode response
   config.ts        # all Config definitions in one place
   main.ts          # THE entry point: compose AppLayer, runMain. Nothing else runs effects.
@@ -16,75 +16,110 @@ src/
 
 ## Defining services
 
-`Effect.Service` for the common case (definition + default implementation together):
+`Context.Service` is the one way to define a service: the interface is a type parameter, the identifier is a string namespaced by package and path, and the default implementation hangs off the class as a `static readonly layer`. Build the implementation with `Self.of({...})` and define each method with `Effect.fn("Service.method")` so every call gets a span:
 
 ```ts
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option, Schema } from "effect"
 
-export class OrderRepo extends Effect.Service<OrderRepo>()("app/OrderRepo", {
-  effect: Effect.gen(function* () {
-    const db = yield* Db
-    return {
-      findById: (id: OrderId) =>
-        db.queryOne(findOrderSql(id)).pipe(
-          Effect.flatMap(Schema.decodeUnknown(OrderRow)),
-          Effect.map(Option.map(rowToDomain)),
-          Effect.mapError((e) => new RepoError({ cause: e })),  // translate to domain error
-        ),
-      save: (order: Order) => /* ... */,
-    }
-  }),
-  dependencies: [Db.Default],
-}) {}
+export class OrderRepo extends Context.Service<OrderRepo, {
+  readonly findById: (id: OrderId) => Effect.Effect<Option.Option<Order>, RepoError>
+  readonly save: (order: Order) => Effect.Effect<void, RepoError>
+}>()("app/services/OrderRepo") {
+  static readonly layer = Layer.effect(
+    OrderRepo,
+    Effect.gen(function* () {
+      const db = yield* Db
+
+      const findById = Effect.fn("OrderRepo.findById")(
+        function* (id: OrderId) {
+          const row = yield* db.queryOne(findOrderSql(id))                 // unknown | null
+          return yield* Schema.decodeUnknownEffect(Schema.OptionFromNullOr(OrderRow))(row)
+        },
+        Effect.map(Option.map(rowToDomain)),
+        Effect.mapError((cause) => new RepoError({ cause })),  // translate to domain error
+      )
+
+      const save = Effect.fn("OrderRepo.save")(
+        (order: Order) => db.execute(saveOrderSql(order)),
+        Effect.mapError((cause) => new RepoError({ cause })),
+      )
+
+      return OrderRepo.of({ findById, save })
+    })
+  )
+}
 ```
 
-Plain `Context.Tag` when you want the interface fully decoupled from any implementation (ports in the hexagonal sense, or library code):
+The layer's requirements (`Db` here) stay in its `R` type — they are wired in `main.ts`, not baked in. If a service should ship pre-wired, expose both: `layerNoDeps` (requirements open, for tests) and `layer = layerNoDeps.pipe(Layer.provide(Db.layer))`.
+
+For a port with several interchangeable implementations (hexagonal adapters, library code), declare the service with no static layer and give each implementation its own `Layer`:
 
 ```ts
-export class PaymentGateway extends Context.Tag("app/PaymentGateway")<
-  PaymentGateway,
-  {
-    readonly charge: (req: ChargeRequest) => Effect.Effect<Receipt, PaymentDeclined | GatewayError>
-  }
->() {}
+import { Context, Effect, Layer } from "effect"
 
-export const PaymentGatewayStripe = Layer.effect(PaymentGateway, Effect.gen(function* () { /* ... */ }))
-export const PaymentGatewayFake   = Layer.succeed(PaymentGateway, { charge: () => Effect.succeed(fakeReceipt) })
+export class PaymentGateway extends Context.Service<PaymentGateway, {
+  readonly charge: (req: ChargeRequest) => Effect.Effect<Receipt, PaymentDeclined | GatewayError>
+}>()("app/services/PaymentGateway") {}
+
+export const PaymentGatewayStripe = Layer.effect(PaymentGateway, Effect.gen(function* () {
+  const stripe = yield* StripeClient
+  return PaymentGateway.of({ charge: Effect.fn("PaymentGateway.charge")((req: ChargeRequest) => stripe.charge(req)) })
+}))
+export const PaymentGatewayFake = Layer.succeed(PaymentGateway, PaymentGateway.of({ charge: () => Effect.succeed(fakeReceipt) }))
+```
+
+A capability with a sensible default (feature flags, tunables, per-request settings) is a `Context.Reference` — it needs no layer, and tests or callers override it with `Effect.provideService`:
+
+```ts
+import { Context } from "effect"
+
+export const MaxLineItems = Context.Reference<number>("app/config/MaxLineItems", {
+  defaultValue: () => 100
+})
 ```
 
 Rules:
-- **Everything nondeterministic or external is a service**: DB, HTTP clients, message queues, file system, clock, random, UUID generation, feature flags. If it touches the world or varies between runs, it goes behind a tag.
+- **Everything nondeterministic or external is a service**: DB, HTTP clients, message queues, file system, clock, random, UUID generation, feature flags. If it touches the world or varies between runs, it goes behind a `Context.Service`.
 - Service methods return `Effect` with **domain-level** errors — infra errors are translated inside the service.
-- Workflows depend on service *interfaces* only; the `R` channel documents exactly what each workflow needs.
+- Workflows depend on service *interfaces* only; the `R` channel documents exactly what each workflow needs. Access a service with `yield* OrderRepo` (or `OrderRepo.use((repo) => ...)` for one-liners).
+- Need the shape as a type? `OrderRepo["Service"]`.
+- **HttpApi gotcha:** inside handler bodies, service requirements become per-request requirements — providing the repo layer to the API layer does not satisfy them. Resolve services (`const repo = yield* OrderRepo`) while building the handler group, then close over them in the handlers (details in `app-shapes.md`).
 
 ## Layers: construction as a first-class value
 
 Layers describe how to build services, including resources and dependencies. They are memoized — a layer used by many others is built once.
 
 ```ts
-// Resource-owning layer: acquire/release tied to the app lifecycle
-export const DbLive = Layer.scoped(
+import { NodeHttpClient } from "@effect/platform-node"
+import { Config, Effect, Layer, Logger, Redacted } from "effect"
+
+// Resource-owning layer: acquire/release tied to the app lifecycle.
+// Layer.effect scopes the resource to the layer — no separate "scoped" constructor.
+export const DbLive = Layer.effect(
   Db,
-  Effect.acquireRelease(
-    Effect.gen(function* () {
-      const url = yield* Config.redacted("DATABASE_URL")
-      const pool = yield* Effect.tryPromise({ try: () => createPool(Redacted.value(url)), catch: (c) => new DbError({ cause: c }) })
-      return makeDb(pool)
-    }),
-    (db) => Effect.promise(() => db.close())   // guaranteed on shutdown/interruption
-  )
+  Effect.gen(function* () {
+    const url = yield* Config.Redacted("DATABASE_URL")
+    const pool = yield* Effect.acquireRelease(
+      Effect.tryPromise({ try: () => createPool(Redacted.value(url)), catch: (cause) => new DbError({ cause }) }),
+      (pool) => Effect.promise(() => pool.close())   // guaranteed on shutdown/interruption
+    )
+    return makeDb(pool)
+  })
 )
 
 // Composition in main.ts — the ONLY place that knows concrete implementations
 const AppLayer = Layer.mergeAll(
-  OrderRepo.Default,
+  OrderRepo.layer,
   PaymentGatewayStripe,
-  NodeHttpClient.layer,
 ).pipe(
   Layer.provide(DbLive),
-  Layer.provide(Logger.json),          // structured logs in prod
+  Layer.provide(StripeClient.layer),
+  Layer.provide(NodeHttpClient.layerUndici),
+  Layer.provide(Logger.layer([Logger.consoleJson])),   // structured logs in prod
 )
 ```
+
+`Layer.provide` satisfies requirements and hides the provider; `Layer.provideMerge` satisfies them *and* re-exports the provider (useful when tests also need direct access to it). To pick an implementation from config at startup, return a layer from an effect with `Layer.unwrap`.
 
 ## Configuration
 
@@ -92,16 +127,18 @@ All config declared with `Config`, read at layer-construction time, validated at
 
 ```ts
 // config.ts — the single inventory of every knob the app has
+import { Config } from "effect"
+
 export const AppConfig = {
-  port: Config.integer("PORT").pipe(Config.withDefault(3000)),
-  databaseUrl: Config.redacted("DATABASE_URL"),               // Redacted: never printed in logs/errors
-  stripeKey: Config.redacted("STRIPE_API_KEY"),
-  logLevel: Config.logLevel("LOG_LEVEL").pipe(Config.withDefault(LogLevel.Info)),
-  environment: Config.literal("development", "staging", "production")("APP_ENV"),
+  port: Config.Port("PORT").pipe(Config.withDefault(3000)),
+  databaseUrl: Config.Redacted("DATABASE_URL"),               // Redacted: never printed in logs/errors
+  stripeKey: Config.Redacted("STRIPE_API_KEY"),
+  logLevel: Config.LogLevel("LOG_LEVEL").pipe(Config.withDefault("Info" as const)),
+  environment: Config.Literals(["development", "staging", "production"], "APP_ENV"),
 }
 ```
 
-Never read `process.env` directly. Secrets are always `Config.redacted` — `Redacted<string>` cannot be accidentally logged.
+Never read `process.env` directly. Secrets are always `Config.Redacted` — `Redacted<string>` cannot be accidentally logged. To apply the configured log level, provide `Layer.succeed(References.MinimumLogLevel, level)` from a `Layer.unwrap`.
 
 ## The entry point
 
@@ -110,15 +147,21 @@ Exactly one per executable. `runMain` installs signal handlers, runs finalizers 
 ```ts
 // main.ts
 import { NodeRuntime } from "@effect/platform-node"
+import { Effect, Layer } from "effect"
 
 NodeRuntime.runMain(
   program.pipe(Effect.provide(AppLayer))
 )
+
+// Or, when the whole app is layers (HTTP server + background workers):
+// NodeRuntime.runMain(Layer.launch(ServerLayer))
 ```
 
 For environments that call *into* you (serverless handlers, test harnesses, frontend), build one `ManagedRuntime` at module scope and reuse it:
 
 ```ts
+import { ManagedRuntime } from "effect"
+
 const runtime = ManagedRuntime.make(AppLayer)
 export const handler = (event: unknown) => runtime.runPromise(handleEvent(event))
 ```
@@ -130,8 +173,11 @@ Anywhere else, `Effect.runPromise`/`runSync` in application code is a design err
 The payoff of capability-based DI: swapping infrastructure is `Layer` substitution, not a mocking framework.
 
 ```ts
+import { assert, it } from "@effect/vitest"
+import { Effect, Layer } from "effect"
+
 const TestLayer = Layer.mergeAll(
-  OrderRepo.Default,
+  OrderRepo.layer,
   PaymentGatewayFake,
 ).pipe(Layer.provide(DbInMemory))
 
@@ -146,9 +192,10 @@ it.effect("places an order", () =>
 ## Checklist
 
 - [ ] Dependency direction: domain ← workflows ← adapters; verified by imports (domain/ imports only `effect` and itself)
-- [ ] Every external dependency behind a tag, including Clock/Random/UUID
+- [ ] Every external dependency behind a `Context.Service`, including Clock/Random/UUID; defaults via `Context.Reference`
+- [ ] Service implementations built with `Self.of({...})`; methods defined with `Effect.fn("Service.method")`
 - [ ] Service methods expose domain errors, not infra errors
-- [ ] All resources built with `Layer.scoped`/`acquireRelease` — cleanup is guaranteed, never manual
-- [ ] One `config.ts`; secrets `Redacted`; zero `process.env` reads elsewhere
+- [ ] All resources acquired with `acquireRelease` inside `Layer.effect` — cleanup is guaranteed, never manual
+- [ ] One `config.ts`; secrets `Config.Redacted`; zero `process.env` reads elsewhere
 - [ ] One entry point with `runMain` (or one module-scope `ManagedRuntime`); zero `run*` calls elsewhere
 - [ ] Every service has (or can trivially have) a test/fake layer
