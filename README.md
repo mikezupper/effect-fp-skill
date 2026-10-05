@@ -1,8 +1,8 @@
 # effect-fp-skill — an Effect-First Functional TypeScript Skill
 
 [![Claude Code Skill](https://img.shields.io/badge/Claude_Code-Skill-d97757?logo=anthropic&logoColor=white)](https://code.claude.com/docs/en/skills)
-[![Effect](https://img.shields.io/badge/Effect-3.22%2B-black)](https://effect.website)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x_strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Effect](https://img.shields.io/badge/Effect-4.0%2B-black)](https://effect.website)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.0%20%7C%207.0_strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Paradigm](https://img.shields.io/badge/paradigm-functional-8A2BE2)](https://fsharpforfunandprofit.com/series/thinking-functionally/)
 [![ROP](https://img.shields.io/badge/errors-railway--oriented-orange)](https://fsharpforfunandprofit.com/rop/)
 [![Types](https://img.shields.io/badge/illegal_states-unrepresentable-success)](https://fsharpforfunandprofit.com/series/designing-with-types/)
@@ -58,7 +58,7 @@ An agent doesn't apply any of this unless you make it. This skill makes it — w
 1. **Railway-oriented programming.** Every operation that can fail returns `Effect<A, E, R>`. Errors are tagged values, never exceptions. Compose the happy path; handle failures explicitly where there's context to do so.
 2. **Make illegal states unrepresentable.** Branded types, tagged unions, `Option`. If the compiler accepts it, it should be valid.
 3. **Parse, don't validate.** `Schema.decodeUnknown` exactly once at each boundary (HTTP, DB, env, queue, file). The core only ever sees domain types.
-4. **Functional core, managed shell.** Pure domain → Effect workflows → infrastructure behind services (`Context.Tag`) wired with `Layer`. Exactly one runtime entry point.
+4. **Functional core, managed shell.** Pure domain → Effect workflows → infrastructure behind services (`Context.Service`) wired with `Layer`. Exactly one runtime entry point.
 5. **Totality.** Functions handle every input in their type. No partial functions, no `throw`, no `any`, no silent `undefined`.
 
 ## Hard rules
@@ -72,7 +72,7 @@ The skill's non-negotiables, enforced three ways: stated in `SKILL.md`, lintable
 | `null` / `undefined` in domain types | `Option<A>` |
 | Boolean state flags | `Data.TaggedEnum` unions with per-state data |
 | `as` casts on external data | `Schema.decodeUnknown` |
-| `process.env` | `Config` (secrets as `Config.redacted`) |
+| `process.env` | `Config` (secrets as `Config.Redacted`) |
 | `Effect.runPromise` mid-codebase | One `runMain` / `ManagedRuntime` entry point |
 | `Date.now()`, `Math.random()` in domain | `Clock` / `Random` / `DateTime` services (testable) |
 | `console.log` | `Effect.log*` with annotations |
@@ -87,9 +87,9 @@ The skill's non-negotiables, enforced three ways: stated in `SKILL.md`, lintable
 | ROP / two-track `Result` | `Effect<A, E, R>` typed error channel; `Data.TaggedError`; `catchTag`/`catchTags` |
 | Designing with types | `Schema.brand`, `Data.TaggedEnum`, `Option`, smart constructors via schemas |
 | Parse, don't validate | `Schema` at every boundary; wire shape ≠ domain shape |
-| Recipe for a functional app | Onion architecture; services via `Context.Tag`; wiring via `Layer`; one `runMain` |
+| Recipe for a functional app | Onion architecture; services via `Context.Service`; wiring via `Layer`; one `runMain` |
 | Commands in, events out | Workflows return `ReadonlyArray<DomainEvent>`; edges dispatch |
-| Property-based testing | `@effect/vitest` + FastCheck; `Arbitrary.make(schema)` derives generators from the same schemas that validate |
+| Property-based testing | `@effect/vitest` `it.prop` + Effect's built-in `Arbitrary`; generators derive from the same schemas that validate |
 | Thinking functionally | Immutability, totality, composition; `pipe` + Effect data modules |
 
 One schema definition = the type + the validator + the JSON codec + the test generator. That single fact carries most of the quality story.
@@ -101,27 +101,27 @@ effect-fp-skill/
 ├── SKILL.md                        # entry point: philosophy, hard rules, decision table,
 │                                   # anti-patterns, build workflow, reference index
 └── references/
-    ├── scaffold.md                 # create-effect-app, pinned versions, strict tsconfig,
-    │                               # @effect/language-service, ESLint rule enforcement
+    ├── scaffold.md                 # lockstep-pinned v4 versions, strict tsconfig, TS 6 vs 7,
+    │                               # @effect/language-service / @effect/tsgo, ESLint rule enforcement
     ├── domain-types.md             # brands, Schema.Class, tagged unions, Option,
     │                               # state transitions, commands-in/events-out
     ├── rop-errors.md               # tagged errors, expected-vs-defect taxonomy,
     │                               # accumulation vs fail-fast, interop wrapping
     ├── pattern-matching.md         # Match module, exhaustiveness discipline
-    ├── services-layers.md          # Context.Tag / Effect.Service, Layer composition,
+    ├── services-layers.md          # Context.Service, Layer composition,
     │                               # Config & secrets, entry-point discipline, test layers
-    ├── database.md                 # @effect/sql: repositories, fiber-propagated transactions,
+    ├── database.md                 # effect/sql: repositories, fiber-propagated transactions,
     │                               # Model variants, SqlResolver batching, migrations, testcontainers
     ├── concurrency.md              # fibers, Queue/PubSub/Deferred/Semaphore/RateLimiter recipes
     ├── testing.md                  # @effect/vitest, TestClock, property patterns, error-track tests
     ├── production.md               # observability, resilience, resource safety, scale patterns,
     │                               # definition-of-done checklist
-    ├── app-shapes.md               # HttpApi servers, @effect/cli, full-stack monorepo, libraries
+    ├── app-shapes.md               # HttpApi servers, effect/cli, full-stack monorepo, libraries
     ├── code-review.md              # mandatory self-review: greps, audits, checklist sweep
-    └── supplemental-ai.md          # optional: @effect/ai integration principles
+    └── supplemental-ai.md          # optional: effect/ai integration principles
 ```
 
-Every reference ends in a checklist. All API examples were verified against the current stable releases (see [Version policy](#version-policy)).
+Every reference ends in a checklist. All API examples were compile-checked against the current releases (see [Version policy](#version-policy)).
 
 ## Installation
 
@@ -172,23 +172,24 @@ The skill uses **progressive disclosure**, which is why it's a folder rather tha
 
 - The rules are opinions — edit them. Relax the strictness tier, swap Postgres guidance for your store, add house naming conventions. Keep the structure: hard rules + decision tables + anti-patterns + checklists is the format agents follow best.
 - Add project-specific layers as a *project* skill that references this one, rather than forking it per repo.
-- If you build LLM features, read `supplemental-ai.md` first — it's deliberately principle-level; have the agent verify current `@effect/ai` APIs at implementation time.
+- If you build LLM features, read `supplemental-ai.md` first — it's deliberately principle-level; have the agent verify current `effect/ai` APIs at implementation time.
 
 **Maintaining**
 
-- The skill pins its knowledge to the Effect 3.x line. On major ecosystem moves (Effect 4.0 going stable), re-run an API-verification pass against the docs and update the reference files — the version notes at the top of each file mark what to check.
+- The skill pins its knowledge to the Effect 4.x line. On each `effect` minor release, re-run an API-verification pass and update the reference files — the version notes at the top of each file mark what to check. The cheapest check: bump the [proof repo](https://github.com/mikezupper/effect-fp-skill-examples) and run its CI; the `effect` package also bundles agent docs (`node_modules/effect/CLAUDE.md`, `ai-docs/`) that are the most reliable API source.
 
 ## Version policy
 
-- **Target: Effect 3.x stable.** All API examples verified against `effect` 3.22.0 and the companion releases current at the time of writing (`@effect/platform` 0.97.x, `@effect/cli` 0.76.x, `@effect/sql` 0.52.x, `@effect/vitest` 0.30.x).
-- Effect **4.0 is in beta** and restructures packages (platform/cli merge into core). The skill instructs agents not to use beta versions unless explicitly asked.
-- Companion packages are 0.x and version-coupled to `effect`: pin them, upgrade them as a family.
-- `HttpApi` and the other Http modules are officially flagged unstable; their canonical docs are the npm-published package READMEs.
+- **Target: Effect 4.x.** All API examples compile-checked against `effect` 4.0.1 (released October 2026) with `@effect/platform-node`, `@effect/sql-pg`, `@effect/sql-sqlite-node` and `@effect/vitest` 4.0.1, vitest 5, and TypeScript 7.0.2.
+- v4 merged `@effect/platform`, `@effect/cli`, `@effect/sql` and `@effect/ai` into `effect` itself (`effect/http`, `effect/http-api`, `effect/cli`, `effect/sql`, `effect/ai`). Those four packages are v3-only.
+- The `effect` family is released in lockstep: `effect` and every `@effect/*` runtime/driver package share one version number. Pin them to the same exact version; upgrade them together.
+- The `effect/*` subpath modules (http, http-api, sql, cli, ai, schema) are tagged `@stability unstable` in 4.0.1 — re-verify those call sites on every upgrade.
+- Effect 3.x projects should migrate wholesale rather than mix versions; the 3.x-era version of this skill is the `v3` tag of this repo.
 
 ## Sources & credits
 
 - **Scott Wlaschin — [F# for Fun and Profit](https://fsharpforfunandprofit.com)**: [Railway Oriented Programming](https://fsharpforfunandprofit.com/rop/) · [A Recipe for a Functional App](https://fsharpforfunandprofit.com/series/a-recipe-for-a-functional-app/) · [Designing with Types](https://fsharpforfunandprofit.com/series/designing-with-types/) · [Property-Based Testing](https://fsharpforfunandprofit.com/series/property-based-testing/) · [FP Patterns](https://fsharpforfunandprofit.com/fppatterns/) · [Thinking Functionally](https://fsharpforfunandprofit.com/series/thinking-functionally/)
-- **[Effect](https://effect.website)** — docs, package READMEs, and published type declarations (the API-verification sources)
+- **[Effect](https://effect.website)** — docs, the agent docs bundled in the `effect` package (`CLAUDE.md`, `ai-docs/`), and published type declarations (the API-verification sources)
 - **[Claude Code skills](https://code.claude.com/docs/en/skills)** — the skill format and progressive-disclosure model
 
 *This skill encodes one team's opinionated synthesis; neither Scott Wlaschin nor the Effect team endorses it.*

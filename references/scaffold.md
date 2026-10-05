@@ -1,39 +1,32 @@
 # Project Scaffold
 
-Verified against Effect 3.22.0 (July 2026). **Target the Effect 3.x stable line.** Effect 4.0 is in beta and restructures packages (platform/cli merge into core) — do not use `4.0.0-beta.*` unless the user asks; re-verify this skill when 4.x goes stable.
+Verified against effect 4.0.1 (October 2026). **Target the Effect 4.x line.** v4 folded `@effect/platform`, `@effect/cli`, `@effect/sql` and `@effect/ai` into `effect` itself (`effect/http`, `effect/http-api`, `effect/cli`, `effect/sql`, `effect/ai`, …) — never install those four packages in a v4 project. Never mix v3 and v4 packages in one dependency tree.
 
-## Option A: official generator
+## Option A: manual scaffold (default)
 
-```bash
-npx create-effect-app@latest            # interactive
-npx create-effect-app -t basic my-app   # templates: basic | cli | monorepo
-```
-
-Templates ship pnpm, vitest, project-references tsconfig, `@effect/language-service`, changesets. Use `monorepo` for full-stack (shared `domain` package — see `app-shapes.md`).
-
-## Option B: manual scaffold
+`create-effect-app` (0.0.6) still generates **Effect 3.x** templates as of October 2026. Prefer the manual scaffold below; if you do use the generator (`npx create-effect-app -t basic|cli|monorepo`), immediately bump its `package.json` to the versions below and delete any `@effect/platform`/`@effect/cli`/`@effect/sql` dependency.
 
 ### package.json (pin the family together)
 
-Companion packages are 0.x and version-coupled to `effect` — **upgrade them together, never individually**.
+The `effect` family is released in lockstep: `effect` and every `@effect/*` runtime/driver package (`platform-node`, `platform-bun`, `sql-pg`, `sql-sqlite-node`, `vitest`, `opentelemetry`, `ai-anthropic`, …) share one version number. **Pin them to the same exact version and upgrade them together, never individually** — a mismatch loads two copies of `effect` and breaks service identity.
 
 ```jsonc
 {
   "type": "module",
   "packageManager": "pnpm@latest",
   "dependencies": {
-    "effect": "^3.22.0",
-    "@effect/platform": "^0.97.0",        // HTTP (note: HttpApi still flagged unstable)
-    "@effect/platform-node": "^0.108.0",
-    "@effect/opentelemetry": "^0.64.0"
-    // per app shape: "@effect/cli": "^0.76.0", "@effect/sql": "^0.52.0", "@effect/sql-pg": "^0.53.0"
+    "effect": "4.0.1",                    // includes effect/http, http-api, cli, sql, ai
+    "@effect/platform-node": "4.0.1"      // NodeRuntime, NodeHttpServer, NodeServices
+    // per app shape: "@effect/sql-pg": "4.0.1" | "@effect/sql-sqlite-node": "4.0.1"
+    // existing OTel setup only: "@effect/opentelemetry": "4.0.1" (new apps: effect/observability Otlp)
   },
   "devDependencies": {
-    "@effect/vitest": "^0.30.0",
-    "@effect/language-service": "^0.87.0",
+    "@effect/vitest": "4.0.1",            // peer: vitest >=5 <6
+    "@effect/language-service": "^0.87.3",
     "@types/node": "^24.0.0",             // required: platform-node imports node:* modules
-    "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "tsx": "^4.23.0",
+    "typescript": "~6.0.3",               // see "TypeScript 6 vs 7" below
+    "vitest": "^5.0.3"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",
@@ -66,7 +59,19 @@ Companion packages are 0.x and version-coupled to `effect` — **upgrade them to
 }
 ```
 
-`@effect/language-service` adds Effect-aware diagnostics — **unexecuted floating Effects**, missing context, `any`/`unknown` leaking into error/requirement channels, outdated APIs — plus refactors (async fn → `Effect.gen`). In VS Code: "TypeScript: Select TypeScript Version" → **Use Workspace Version**, or the plugin silently doesn't run.
+`@effect/language-service` adds Effect-aware diagnostics — **unexecuted floating Effects**, missing context, `any`/`unknown` leaking into error/requirement channels, `outdatedApi` (v3 APIs removed or renamed in v4) — plus refactors (async fn → `Effect.gen`). In VS Code: "TypeScript: Select TypeScript Version" → **Use Workspace Version**, or the plugin silently doesn't run.
+
+In 4.0.1 every subpath module (`effect/http`, `effect/http-api`, `effect/sql`, `effect/cli`, `effect/ai`, `effect/schema`) is tagged `@stability unstable` — APIs may change in minor releases, so re-verify those call sites on every upgrade. On TS 7, `@effect/tsgo`'s `unstableApiUsage` diagnostic flags them; acknowledge the modules the app deliberately depends on with `"allowedUnstableApis": ["effect/http", "effect/http-api", "effect/sql"]` rather than disabling the rule.
+
+### TypeScript 6 vs 7
+
+| | TS 6.0 (default) | TS 7.0 (native `tsgo`) |
+|---|---|---|
+| Effect diagnostics | `@effect/language-service` plugin | `@effect/tsgo` (`npx @effect/tsgo setup`) — use it *instead of* plain `tsgo` |
+| ESLint / typescript-eslint | supported | **not yet** — typescript-eslint 8.x peers `typescript <6.1` |
+| Speed | baseline | much faster typecheck (native compiler) |
+
+Default to TS 6.0 because the lint enforcement layer below requires typescript-eslint. Choose TS 7 + `@effect/tsgo` only if the team accepts moving the hard-rule lint checks elsewhere (e.g. tsgo's Oxlint integration); the application code is identical under both.
 
 ### vitest.config.ts
 
@@ -91,22 +96,28 @@ test/
 ```
 
 ```ts
-// src/config.ts
-import { Config, LogLevel } from "effect"
+// src/config.ts — v4 Config constructors are Schema-backed and PascalCase
+import { Config } from "effect"
 export const AppConfig = {
-  logLevel: Config.logLevel("LOG_LEVEL").pipe(Config.withDefault(LogLevel.Info)),
-  environment: Config.literal("development", "staging", "production")("APP_ENV").pipe(
+  logLevel: Config.LogLevel("LOG_LEVEL").pipe(Config.withDefault("Info" as const)),
+  environment: Config.Literals(["development", "staging", "production"], "APP_ENV").pipe(
     Config.withDefault("development" as const)
   ),
 }
 
 // src/main.ts
 import { NodeRuntime } from "@effect/platform-node"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, References } from "effect"
+import { AppConfig } from "./config.js"
 
-const AppLayer = Layer.mergeAll(/* live layers */)
+const AppLayer = Layer.mergeAll(OrderRepo.layer, PaymentGateway.layer) // every live layer
 
-NodeRuntime.runMain(program.pipe(Effect.provide(AppLayer)))
+const main = Effect.gen(function* () {
+  const level = yield* AppConfig.logLevel
+  return yield* program.pipe(Effect.provideService(References.MinimumLogLevel, level))
+})
+
+NodeRuntime.runMain(main.pipe(Effect.provide(AppLayer)))
 // HTTP apps: Layer.launch(ServerLive).pipe(NodeRuntime.runMain) — see app-shapes.md
 ```
 
@@ -127,9 +138,15 @@ Make the rules mechanical, not aspirational — ESLint with `no-restricted-synta
       { "selector": "MemberExpression[object.object.name='process'][object.property.name='env']",
         "message": "Use Config in config.ts" }
     ],
-    "no-restricted-imports": ["error", { "paths": [
-      { "name": "lodash", "message": "Effect's data modules only" }
-    ]}],
+    "no-restricted-imports": ["error", {
+      "paths": [
+        { "name": "lodash", "message": "Effect's data modules only" },
+        { "name": "@effect/platform", "message": "Effect v4: import from effect/http, effect/http-api, or effect" },
+        { "name": "@effect/sql", "message": "Effect v4: import from effect/sql" },
+        { "name": "@effect/cli", "message": "Effect v4: import from effect/cli" },
+        { "name": "@effect/schema", "message": "Schema lives in effect" }
+      ]
+    }],
     "@typescript-eslint/no-explicit-any": "error",
     "@typescript-eslint/no-non-null-assertion": "error"
   }
@@ -140,8 +157,10 @@ Scope exceptions narrowly with per-directory overrides (e.g. allow `Effect.tryPr
 
 ## Checklist
 
-- [ ] Effect 3.x stable pinned; companion packages upgraded as a family
+- [ ] `effect` 4.x and every `@effect/*` package pinned to the same exact version; upgraded as a family
+- [ ] No `@effect/platform`, `@effect/cli`, `@effect/sql`, `@effect/ai`, `@effect/schema` dependencies (v3-era packages)
+- [ ] vitest 5 with `@effect/vitest` 4.x
 - [ ] tsconfig strict trio: `strict`, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`
-- [ ] `@effect/language-service` in plugins and workspace TS selected
+- [ ] `@effect/language-service` in plugins and workspace TS selected (or `@effect/tsgo` on TS 7); deliberate unstable modules listed in `allowedUnstableApis`
 - [ ] Directory skeleton matches services-layers.md; `main.ts` is the only `run*` site
 - [ ] Lint rules enforcing the hard rules are active in CI
