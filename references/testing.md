@@ -102,6 +102,8 @@ Generator gotchas, both seen as `Property exhausted after 0 run(s) and N discard
 - An `Arbitrary.filter` (or a `Schema.refine`/`makeFilter` predicate the generator can't see into) that rejects most values exhausts the generator. Narrow the *schema* with built-in checks such as `isBetween`, `isMinLength`, `isPattern`, or build the value with `Arbitrary.map`/`flatMap`.
 - `isPattern` regexes with flags (`/.../i`) aren't honored by generation. Spell the character classes out instead (`[A-Za-z]`).
 
+A rarer one that fails on a random seed instead: derived `DateTime` arbitraries reach the representable extremes (±8.64e15 ms, e.g. `-271821-04-20`). Arithmetic past them (`DateTime.subtract(min, { milliseconds: 1 })`) silently yields an invalid `NaN` instant, and comparisons on it return nonsense, not an error. When a property does date arithmetic, `Arbitrary.filter` the boundary out (a cheap filter — it rejects almost nothing), or bound the domain schema if such dates are genuinely invalid input.
+
 ### Round-trip every boundary schema
 
 `TestSchema.Asserts` from `effect/testing` turns "decode ∘ encode = id" into one line:
